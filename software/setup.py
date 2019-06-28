@@ -8,6 +8,8 @@ import io
 import os
 import sys
 from shutil import rmtree
+import platform
+import subprocess
 
 from setuptools import find_packages, setup, Command, Extension
 from setuptools.command.build_ext import build_ext
@@ -37,65 +39,75 @@ with io.open(os.path.join(here, 'README.md'), encoding='utf-8') as f:
 
 # Load the package's __version__.py module as a dictionary.
 about = {}
-with open(os.path.join(here, 'PiFinder/__version__.py')) as f:
+with open(os.path.join(here, 'python/__version__.py')) as f:
     exec(f.read(), about)
 
 class CMakeExtension(Extension):
-    def __init__(self, name, sourcedir=''):
-        Extension.__init__(self, name, sources=[])
-        self.sourcedir = os.path.abspath(sourcedir)
-
+    def __init__(self, name, cmake_lists_dir='.', **kwa):
+        Extension.__init__(self, name, sources=[], **kwa)
+        self.cmake_lists_dir = os.path.abspath(cmake_lists_dir)
+        print('CMake lists {}'.format(self.cmake_lists_dir))
 
 class CMakeBuild(build_ext):
-    def run(self):
+    def build_extensions(self):
+        # Ensure that CMake is present and working
         try:
             out = subprocess.check_output(['cmake', '--version'])
         except OSError:
-            raise RuntimeError(
-                "CMake must be installed to build the following extensions: " +
-                ", ".join(e.name for e in self.extensions))
-
-        if platform.system() == "Windows":
-            cmake_version = LooseVersion(re.search(r'version\s*([\d.]+)',
-                                         out.decode()).group(1))
-            if cmake_version < '3.1.0':
-                raise RuntimeError("CMake >= 3.1.0 is required on Windows")
+            raise RuntimeError('Cannot find CMake executable')
 
         for ext in self.extensions:
-            self.build_extension(ext)
 
-    def build_extension(self, ext):
-        extdir = os.path.abspath(
-            os.path.dirname(self.get_ext_fullpath(ext.name)))
-        cmake_args = ['-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=' + extdir,
-                      '-DPYTHON_EXECUTABLE=' + sys.executable]
+            extdir = os.path.abspath(os.path.dirname(self.get_ext_fullpath(ext.name)))
+            #cfg = 'Debug' if options['--debug'] == 'ON' else 'Release'
+            cfg = 'Debug'
 
-        cfg = 'Debug' if self.debug else 'Release'
-        build_args = ['--config', cfg]
+            cmake_args = [
+                '-DCMAKE_BUILD_TYPE=%s' % cfg,
+                # Ask CMake to place the resulting library in the directory
+                # containing the extension
+                '-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_{}={}'.format(cfg.upper(), extdir),
+                # Other intermediate static libraries are placed in a
+                # temporary build directory instead
+                '-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY_{}={}'.format(cfg.upper(), self.build_temp),
+                # Hint CMake to use the same Python executable that
+                # is launching the build, prevents possible mismatching if
+                # multiple versions of Python are installed
+                '-DPYTHON_EXECUTABLE={}'.format(sys.executable),
+                # Add other project-specific CMake arguments if needed
+                # ...
+            ]
 
-        if platform.system() == "Windows":
-            cmake_args += ['-DCMAKE_LIBRARY_OUTPUT_DIRECTORY_{}={}'.format(
-                cfg.upper(),
-                extdir)]
-            if sys.maxsize > 2**32:
-                cmake_args += ['-A', 'x64']
-            build_args += ['--', '/m']
-        else:
-            cmake_args += ['-DCMAKE_BUILD_TYPE=' + cfg]
-            build_args += ['--', '-j2']
+            # We can handle some platform-specific settings at our discretion
+            if platform.system() == 'Windows':
+                plat = ('x64' if platform.architecture()[0] == '64bit' else 'Win32')
+                cmake_args += [
+                    # These options are likely to be needed under Windows
+                    '-DCMAKE_WINDOWS_EXPORT_ALL_SYMBOLS=TRUE',
+                    '-DCMAKE_RUNTIME_OUTPUT_DIRECTORY_{}={}'.format(cfg.upper(), extdir),
+                ]
+                # Assuming that Visual Studio and MinGW are supported compilers
+                if self.compiler.compiler_type == 'msvc':
+                    cmake_args += [
+                        '-DCMAKE_GENERATOR_PLATFORM=%s' % plat,
+                    ]
+                else:
+                    cmake_args += [
+                        '-G', 'MinGW Makefiles',
+                    ]
 
-        env = os.environ.copy()
-        env['CXXFLAGS'] = '{} -DVERSION_INFO=\\"{}\\"'.format(
-            env.get('CXXFLAGS', ''),
-            self.distribution.get_version())
-        if not os.path.exists(self.build_temp):
-            os.makedirs(self.build_temp)
-        subprocess.check_call(['cmake', ext.sourcedir] + cmake_args,
-                              cwd=self.build_temp, env=env)
-        subprocess.check_call(['cmake', '--build', '.'] + build_args,
-                              cwd=self.build_temp)
-        print()  # Add an empty line for cleaner output
-        
+            #cmake_args += cmake_cmd_args
+
+            if not os.path.exists(self.build_temp):
+                os.makedirs(self.build_temp)
+
+            # Config
+            subprocess.check_call(['cmake', ext.cmake_lists_dir] + cmake_args,
+                                  cwd=self.build_temp)
+
+            # Build
+            subprocess.check_call(['cmake', '--build', '.', '--config', cfg],
+                                  cwd=self.build_temp)
 class UploadCommand(Command):
     """Support setup.py upload."""
 
@@ -142,17 +154,7 @@ setup(
     author_email=EMAIL,
     url=URL,
     packages=find_packages(exclude=('tests',)),
-    ext_modules=[Extension(
-        "laser",
-        ["PiFinder/laser.c"],
-        extra_compile_args=extra_compile_args,
-        extra_link_args=extra_link_args,
-        language='c++14',
-        runtime_library_dirs=[
-            ".",
-        ],
-
-    )],
+    ext_modules=[CMakeExtension('laser')],
     # If your package is a single module, use this instead of 'packages':
     # py_modules=['slideshows'],
 
@@ -168,6 +170,7 @@ setup(
     ],
     # $ setup.py publish support.
     cmdclass={
+        'build_ext': CMakeBuild,
         'upload': UploadCommand,
     },
 )

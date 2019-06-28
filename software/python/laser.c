@@ -9,8 +9,8 @@ static PyObject *init(PyObject *self, PyObject *args);
 static PyObject *get_distance(PyObject *self, PyObject *args);
 
 static PyMethodDef module_methods[] = {
-    {"init", core_get_distance, METH_VARARGS, get_distance_docstring},
-    {"get_distance", core_get_distance, METH_VARARGS, get_distance_docstring},
+    {"init", init, METH_VARARGS, get_distance_docstring},
+    {"get_distance", get_distance, METH_VARARGS, get_distance_docstring},
     {NULL, NULL, 0, NULL}
 };
 
